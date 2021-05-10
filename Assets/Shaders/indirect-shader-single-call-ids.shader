@@ -28,7 +28,6 @@ Shader "Indirect Shader Single Call Ids"
                 int modelid;
                 float3 vertex;
                 float3 normal;
-                int vertexid;
             };
 
             //--------------------------------------------------------------------

@@ -14,7 +14,6 @@ public static class ImportStructuredBufferMesh
         public int modelid;
         public Vector3 vertex;
         public Vector3 normal;
-        public int vertexid;
 
         public override string ToString()
         {
@@ -50,8 +49,7 @@ public static class ImportStructuredBufferMesh
                 {
                     modelid = i,
                     vertex = verts[idx],
-                    normal = norms[idx],
-                    vertexid = idx
+                    normal = norms[idx]
                 };
             }
         }
