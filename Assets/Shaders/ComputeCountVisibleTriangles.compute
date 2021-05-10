@@ -1,0 +1,43 @@
+﻿//--------------------------------------------------------------------
+#pragma kernel AccumulateTriangles
+#pragma kernel MapTris
+
+//--------------------------------------------------------------------
+Texture2D<float4> _idTex;
+RWStructuredBuffer<bool> _AllVisibilityInfos;
+AppendStructuredBuffer<uint> _AllTriIdxVisible;
+
+//--------------------------------------------------------------------
+// Kernel (0) to create a buffer per triangle id, true at index if triangle with index is visible
+// Runs in parallel on (x,y) for the entire texture
+[numthreads(1, 1, 1)]
+void AccumulateTriangles(uint3 id : SV_DispatchThreadID)
+{
+    float4 px = _idTex[id.xy]; // gets the color at (x, y)
+
+    // Transforms the color back into an index (first transformation done in the shader: Indirect Shader Single Call Ids)
+    uint idxTriangle = 
+        (((int)(px.r * 255) & 0xFF) << 0) |
+        (((int)(px.g * 255) & 0xFF) << 8) |
+        (((int)(px.b * 255) & 0xFF) << 16) |
+        (((int)(px.a * 255) & 0xFF) << 24);
+
+    // If it's not white at (x,y) it means we have a triangle, save that this triangle is visible!
+    if(idxTriangle != 0xFFFFFFFF) _AllVisibilityInfos[idxTriangle] = true;
+}
+
+//--------------------------------------------------------------------
+// Kernel (1) to accumulates a list of visible triangle idx
+// Runs in parallel on x for the entire array of visibility created by previous Kernel
+[numthreads(1, 1, 1)]
+void MapTris(uint3 id : SV_DispatchThreadID)
+{
+    uint idxTriangle = id.x;
+    bool isVisible = _AllVisibilityInfos[idxTriangle];
+
+    if (isVisible) _AllTriIdxVisible.Append(idxTriangle); // builds the result array of triangle indexes
+
+    _AllVisibilityInfos[idxTriangle] = false; // we don't need to apprend this triangle anymore
+}
+
+//--------------------------------------------------------------------
