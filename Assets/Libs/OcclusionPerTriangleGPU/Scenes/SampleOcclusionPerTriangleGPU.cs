@@ -42,8 +42,11 @@ public class SampleOcclusionPerTriangleGPU : MonoBehaviour
         _posLastOccCam = occlusionManager.camOcclusion.transform.position;
         _rotLastOccCam = occlusionManager.camOcclusion.transform.rotation;
 
+        // Try to do this as less as possible because it's slow, but if your objects are moving you will need to repack them! (not all!)
+        occlusionManager.PackAllMeshes(_allMeshFiltersToCheck);
+
         if (occlusionManager.IsReadyToComputeVisibility)
-            occlusionManager.CheckVisiblityAsync(_allMeshFiltersToCheck);
+            occlusionManager.CheckVisiblityAsync();
     }
 
     //--------------------------------------------------------------------
@@ -51,7 +54,7 @@ public class SampleOcclusionPerTriangleGPU : MonoBehaviour
     {
         // Space to check / refresh visibility
         if (Input.GetKeyDown(KeyCode.Space) && occlusionManager.IsReadyToComputeVisibility)
-            occlusionManager.CheckVisiblityAsync(_allMeshFiltersToCheck);
+            occlusionManager.CheckVisiblityAsync();
 
         DoMovement();
 
@@ -61,32 +64,6 @@ public class SampleOcclusionPerTriangleGPU : MonoBehaviour
     //--------------------------------------------------------------------
     private void DoMovement()
     {
-        // Move the main camera and occlusion camera around
-        float inputHorizontal = Input.GetAxis("Horizontal");
-        float inputVertical = Input.GetAxis("Vertical");
-
-        // Move forward / backward
-        /*if (Mathf.Abs(inputVertical) > 0)
-        {
-            //Camera.main.transform.position += inputVertical * speedMoveCam * Time.deltaTime * Camera.main.transform.forward;
-            //occlusionManager.camOcclusion.transform.position = Camera.main.transform.position;
-
-            occlusionManager.camOcclusion.transform.position += inputVertical * speedMoveCam * Time.deltaTime * occlusionManager.camOcclusion.transform.forward;
-
-            _hasMoved = true;
-        }
-
-        // Turn left/right
-        if (Mathf.Abs(inputHorizontal) > 0)
-        {
-            //Camera.main.transform.Rotate(Vector3.up, inputHorizontal * speedTurnCam * Time.deltaTime);
-            //occlusionManager.camOcclusion.transform.rotation = Camera.main.transform.rotation;
-
-            occlusionManager.camOcclusion.transform.Rotate(Vector3.up, inputHorizontal * speedTurnCam * Time.deltaTime);
-
-            _hasMoved = true;
-        }*/
-
         // If we moved and occlusion is ready, we re calculate it
         Vector3 posCamOcc = occlusionManager.camOcclusion.transform.position;
         float distCam = Vector3.Distance(_posLastOccCam, posCamOcc);
@@ -95,7 +72,7 @@ public class SampleOcclusionPerTriangleGPU : MonoBehaviour
         if (isUpdateOcclusionAutoIfMove && (distCam > distMinToRecheck || distAngleCam > angleMinToRecheck) 
             && _timeSinceLastCheck > timeMinBetweenChecks && occlusionManager.IsReadyToComputeVisibility)
         {
-            occlusionManager.CheckVisiblityAsync(_allMeshFiltersToCheck);
+            occlusionManager.CheckVisiblityAsync();
 
             _timeSinceLastCheck = 0.0f;
             _posLastOccCam = occlusionManager.camOcclusion.transform.position;

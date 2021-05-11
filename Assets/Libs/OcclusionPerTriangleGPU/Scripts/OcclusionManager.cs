@@ -8,6 +8,12 @@ using UnityEngine;
 using System.Runtime.InteropServices;
 using UnityEngine.Rendering;
 
+public struct boolMarshal
+{
+    [MarshalAs(UnmanagedType.Bool)]
+    public byte boolean;
+}
+
 //--------------------------------------------------------------------
 namespace OcclusionPerTriangleGPU
 {
@@ -105,8 +111,8 @@ namespace OcclusionPerTriangleGPU
         private const int ACCUM_KERNEL = 0;
         private const int MAP_KERNEL = 1;
         private uint[] dataAllTriIdxVisible;
-        private float _timeStartCompute, _timeStartDrawRenderTex, _timeFinishedDrawRenderTex;
         private int _nbTrianglesMaxPerFrameFinal;
+        private uint[] _allTrianglesToZero;
 
         //--------------------------------------------------------------------
         public void Init()
@@ -138,12 +144,74 @@ namespace OcclusionPerTriangleGPU
         }
 
         //--------------------------------------------------------------------
-        public void CheckVisiblityAsync(List<MeshFilter> allMeshesToCheck_)
+        /// <summary>
+        /// Takes all MeshFilter and pack them into an array of Points (position, normal, modelid) to feed to buffers / shaders
+        /// This is very costly(4.15ms for 38k triangles on my 2015 GPU), try to avoid doing it every time! Only do it for non static objects that moved
+        /// </summary>
+        public void PackAllMeshes(List<MeshFilter> allMeshesToCheck_)
         {
-            _timeStartCompute = Time.time;
+            // No renderers to process
+            if (allMeshesToCheck_.Count <= 0)
+            {
+                Debug.LogError("[OcclusionPerTriangleGPU] PackAllMeshes ERROR we need some meshes to check visibility to");
+                return;
+            }
 
-            // == Multiple Sanity Check
+            ClearAndDispose(false);
 
+            // Setup the meshes to process into lists for compute buffers
+            for (int i = 0; i < allMeshesToCheck_.Count; i++)
+            {
+                meshes.Add(allMeshesToCheck_[i].sharedMesh);
+
+                _allPerModelAttributes.Add(new PerModelAttribute()
+                {
+                    matrixLocalToWorld = allMeshesToCheck_[i].transform.localToWorldMatrix,
+                });
+            }
+
+            // All Vertices Infos: Transform the list of meshes into a Compute Buffer of points (modelid, vertex pos, vertex normal)
+            _allVertexData = ImportStructuredBufferMesh.ImportAllAndUnpack(meshes.ToArray(), ref _cbAllVerticesInfos);
+
+            _nbTrianglesMaxPerFrameFinal = drawInOneFrame ? _cbAllVerticesInfos.count / 3 : nbTrianglesMaxPerFrame;
+
+            // == Setup compute buffers & material to write visibility into the render texture
+
+            // Per Model Attribute: Computer Buffer with localToWorldMatrix for each renderer
+            _cbAllPerModelAttributes = new ComputeBuffer(_allPerModelAttributes.Count, Marshal.SizeOf(typeof(PerModelAttribute)), ComputeBufferType.Default);
+            _cbAllPerModelAttributes.SetData(_allPerModelAttributes.ToArray());
+
+            // Set the buffer in the material / shader to render the triangle ids
+            matToDrawTriangleIds.SetBuffer("AllPerModelAttributes", _cbAllPerModelAttributes);
+            matToDrawTriangleIds.SetBuffer("AllVerticesInfos", _cbAllVerticesInfos);
+
+            // == Setup the compute shader, its two kerner and its compute buffer to parse the render texture and output a list of triangle idx that are visible
+            // First setup the buffers to read the render texture and generate the visible triangle index
+
+            // List of bools with all triangle idx, true if it's visible, false if not
+            _cbAllVisibilityInfos = new ComputeBuffer(_cbAllVerticesInfos.count / 3, Marshal.SizeOf(typeof(bool)));
+
+            // RESULT => List of triangle idx that are visible by our cam
+            _cbAllTriIdxVisible = new ComputeBuffer(_cbAllVerticesInfos.count / 3, Marshal.SizeOf(typeof(uint)), ComputeBufferType.Append);
+            _allTrianglesToZero = new uint[_cbAllVerticesInfos.count / 3];
+
+            // Then setup the kernels that will be used to parse the render texture
+
+            // ACCUM_KERNEL takes the render texture of visibility and fills _cbAllVisibilityInfos to true for triangle index where there is a color
+            compute.SetBuffer(ACCUM_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos); // true/false list
+            compute.SetTexture(ACCUM_KERNEL, "_idTex", _renderTexOcclusion); // render tex
+
+            // MAP_KERNEL makes the result list, it takes _cbAllVisibilityInfos and creates _cbAllTriIdxVisible
+            compute.SetBuffer(MAP_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
+            compute.SetBuffer(MAP_KERNEL, "_AllTriIdxVisible", _cbAllTriIdxVisible);
+        }
+
+        //--------------------------------------------------------------------
+        /// <summary>
+        /// Checks the visibility of all meshes that were packed using PackAllMeshes
+        /// </summary>
+        public void CheckVisiblityAsync()
+        {
             // Not Init yet, that's a problem! 
             if (_stateCurrent == EnumOccState.None)
             {
@@ -162,77 +230,23 @@ namespace OcclusionPerTriangleGPU
                 return;
             }
 
-            // No renderers to process
-            if (allMeshesToCheck_.Count <= 0)
-            {
-                Debug.LogError("[OcclusionPerTriangleGPU] CheckVisiblityAsync ERROR we need some meshes to check visibility to");
-                return;
-            }
-
             _stateCurrent = EnumOccState.Busy_DrawingVisibilityOrFetchingResults;
 
-            // == Free all buffers / lists if they exist
-            ClearAndDispose(false);
-
-            // == Setup compute buffers & material to write visibility into the render texture
-
-            // Setup the meshes to process into lists for compute buffers
-            for (int i = 0; i < allMeshesToCheck_.Count; i++)
-            {
-                meshes.Add(allMeshesToCheck_[i].sharedMesh);
-
-                _allPerModelAttributes.Add(new PerModelAttribute()
-                {
-                    matrixLocalToWorld = allMeshesToCheck_[i].transform.localToWorldMatrix,
-                });
-            }
-
-            // All Vertices Infos: Transform the list of meshes into a Compute Buffer of points (modelid, vertex pos, vertex normal)
-            _allVertexData = ImportStructuredBufferMesh.ImportAllAndUnpack(meshes.ToArray(), ref _cbAllVerticesInfos);
-
-            _nbTrianglesMaxPerFrameFinal = drawInOneFrame ? _cbAllVerticesInfos.count / 3 : nbTrianglesMaxPerFrame;
-
-            // Per Model Attribute: Computer Buffer with localToWorldMatrix for each renderer
-            _cbAllPerModelAttributes = new ComputeBuffer(_allPerModelAttributes.Count, Marshal.SizeOf(typeof(PerModelAttribute)), ComputeBufferType.Default);
-            _cbAllPerModelAttributes.SetData(_allPerModelAttributes.ToArray());
-
-            // Set the buffer in the material / shader to render the triangle ids
-            matToDrawTriangleIds.SetBuffer("AllPerModelAttributes", _cbAllPerModelAttributes);
-            matToDrawTriangleIds.SetBuffer("AllVerticesInfos", _cbAllVerticesInfos);
-
-            // == Setup the compute shader, its two kerner and its compute buffer to parse the render texture and output a list of triangle idx that are visible
-            // First setup the buffers to read the render texture and generate the visible triangle index
-
-            // List of bools with all triangle idx, true if it's visible, false if not
-            _cbAllVisibilityInfos = new ComputeBuffer(_cbAllVerticesInfos.count / 3, Marshal.SizeOf(typeof(bool)));
-
-            // RESULT => List of triangle idx that are visible by our cam
-            _cbAllTriIdxVisible = new ComputeBuffer(_cbAllVerticesInfos.count / 3, Marshal.SizeOf(typeof(uint)), ComputeBufferType.Append);
-
-            // Then setup the kernels that will be used to parse the render texture
-
-            // ACCUM_KERNEL takes the render texture of visibility and fills _cbAllVisibilityInfos to true for triangle index where there is a color
-            compute.SetBuffer(ACCUM_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos); // true/false list
-            compute.SetTexture(ACCUM_KERNEL, "_idTex", _renderTexOcclusion); // render tex
-
-            // MAP_KERNEL makes the result list, it takes _cbAllVisibilityInfos and creates _cbAllTriIdxVisible
-            compute.SetBuffer(MAP_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
-            compute.SetBuffer(MAP_KERNEL, "_AllTriIdxVisible", _cbAllTriIdxVisible);
+            // We don't need to reset _cbAllVerticesInfos because it's set back to false in the shader! also i have no idea how to SetData with an array of bool because it's not blitable
+            _cbAllTriIdxVisible.SetData(_allTrianglesToZero); // Otherwise some triangle from previous check will be set!
 
             // Start the coroutine that will draw over some frames + fetch the results 
             _occlusionCoroutine = StartCoroutine(DrawVisibleTrianglesAndComputeResult());
         }
 
         //--------------------------------------------------------------------
-        // Coroutine that will procedurally draw the triangles using the camOcclusion into the _renderTexOcclusion and then use compute shader to create an array of visible triangle idx
+        // coroutine to draw triangles over many frames and to wait for the GPU when reading back the resulting triangle array
         IEnumerator DrawVisibleTrianglesAndComputeResult()
         {
             int totaltris = _cbAllVerticesInfos.count / 3;
 
             if (isDebugNbTriangles) Debug.Log("[OcclusionPerTriangleGPU] DrawVisibleTrianglesAndComputeResult totaltris: " + totaltris
                 + " _nbTrianglesMaxPerFrameFinal: " + _nbTrianglesMaxPerFrameFinal);
-
-            _timeStartDrawRenderTex = Time.time;
 
             // Render totaltris triangles over several frames depending on _nbTrianglesMaxPerFrameFinal
             for (int i = 0; i < totaltris; i += _nbTrianglesMaxPerFrameFinal)
@@ -262,8 +276,6 @@ namespace OcclusionPerTriangleGPU
 
                 if (i + _nbTrianglesMaxPerFrameFinal < totaltris) yield return null;
             }
-
-            _timeFinishedDrawRenderTex = Time.time;
 
             // Parse the render texture on the GPU to output a list of all visible triangle idx
             _cbAllTriIdxVisible.SetCounterValue(0);
@@ -301,16 +313,7 @@ namespace OcclusionPerTriangleGPU
 
             _stateCurrent = EnumOccState.Ready_HasOcclusionResults; // now we have results!
             _occlusionCoroutine = null;
-
-            if (isDebugTimeToCompute)
-            {
-                float timeTotal = Time.time - _timeStartCompute;
-                float timeRenderTex = _timeFinishedDrawRenderTex - _timeStartDrawRenderTex; // ends up being 0 because it's a DrawProceduralNow
-                float timeRequestGPUData = Time.time - _timeFinishedDrawRenderTex;
-
-                Debug.Log("[OcclusionPerTriangleGPU] DrawVisibleTrianglesAndComputeResult timeTotal: " + timeTotal
-                    + " timeRenderTex: " + timeRenderTex + " timeRequestGPUData: " + timeRequestGPUData);
-            }
+            // _renderTexOcclusion.DiscardContents(); // not needed if you use the render texture a lot (check visibility a lot)
         }
 
         //--------------------------------------------------------------------
@@ -319,11 +322,10 @@ namespace OcclusionPerTriangleGPU
             meshes.Clear();
             _allPerModelAttributes.Clear();
 
-            _renderTexOcclusion.DiscardContents();
+            //_renderTexOcclusion.DiscardContents();
             if (isFinal) _renderTexOcclusion.Release();
 
             dataAllTriIdxVisible = null;
-            //if (dataAllTriIdxVisible.IsCreated) dataAllTriIdxVisible.Dispose();
 
             if (_cbAllVerticesInfos != null) { _cbAllVerticesInfos.Release(); _cbAllVerticesInfos = null; }
             if (_cbAllPerModelAttributes != null) { _cbAllPerModelAttributes.Release(); _cbAllPerModelAttributes = null; }
@@ -354,7 +356,7 @@ namespace OcclusionPerTriangleGPU
             {
                 int idxTriangle = (int)dataAllTriIdxVisible[i];
 
-                if (idxTriangle == 0) continue; // We can stop as soon as we reach empty part of array
+                if (idxTriangle == 0) break; // We can stop as soon as we reach empty part of array
 
                 // All vertex index are found from the idxTriangle:
                 int idxV0 = idxTriangle * 3;
