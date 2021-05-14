@@ -98,6 +98,10 @@ namespace OcclusionPerTriangleGPU
         // Use this before calling CheckVisiblityAsync to make sure all is ready
         public bool IsReadyToComputeVisibility { get { return _stateCurrent == EnumOccState.InitDone || _stateCurrent == EnumOccState.Ready_HasOcclusionResults; } }
 
+        // Result of the occlusion check
+        [System.NonSerialized] public uint[] dataAllTriIdxVisible;
+        [System.NonSerialized] public int nbTriangleVisible;
+
         // Internal
         private EnumOccState _stateCurrent = EnumOccState.None;
         private RenderTexture _renderTexOcclusion;
@@ -110,7 +114,6 @@ namespace OcclusionPerTriangleGPU
         private ComputeBuffer _cbAllVisibilityInfos, _cbAllTriIdxVisible;
         private const int ACCUM_KERNEL = 0;
         private const int MAP_KERNEL = 1;
-        private uint[] dataAllTriIdxVisible;
         private int _nbTrianglesMaxPerFrameFinal;
         private uint[] _allTrianglesToZero;
 
@@ -310,6 +313,17 @@ namespace OcclusionPerTriangleGPU
             Unity.Collections.NativeArray<uint> nativeVisibleIdxTri = requestForVisibleTriIndexes.GetData<uint>(); // get the data into a native array
             dataAllTriIdxVisible = new uint[nativeVisibleIdxTri.Length];
             nativeVisibleIdxTri.CopyTo(dataAllTriIdxVisible); // get the data into an array (the native array is not persistent)
+
+            // Determine the real number of triangle indexes in dataAllTriIdxVisible to avoid parsing the trail of 0
+            for (int i = 0; i < dataAllTriIdxVisible.Length; i++)
+            {
+                // When we encounter idxTriangle 0 they are two possibilities : it's the real 0, or it's the start of the 0 trail in the index
+                if (dataAllTriIdxVisible[i] == 0 && i < dataAllTriIdxVisible.Length - 1 && dataAllTriIdxVisible[i + 1] == 0)
+                {
+                    nbTriangleVisible = i; // we found the start of the 0 trail
+                    break;
+                }
+            }
 
             _stateCurrent = EnumOccState.Ready_HasOcclusionResults; // now we have results!
             _occlusionCoroutine = null;
