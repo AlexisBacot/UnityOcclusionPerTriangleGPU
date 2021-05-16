@@ -111,12 +111,11 @@ namespace OcclusionPerTriangleGPU
         private Coroutine _occlusionCoroutine;
         // Compute Buffers & kernels
         private ComputeBuffer _cbAllVerticesInfos, _cbAllPerModelAttributes;
-        private ComputeBuffer _cbAllVisibilityInfos, _cbAllTriIdxVisible;
+        private ComputeBuffer _cbAllVisibilityInfos, _cbAllTriIdxVisible, _cbNbTriangleResult;
         private const int ACCUM_KERNEL = 0;
         private const int MAP_KERNEL = 1;
         private const int CLEANVISIBILITY_KERNEL = 2;
         private int _nbTrianglesMaxPerFrameFinal;
-        private uint[] _allTrianglesToZero;
 
         //--------------------------------------------------------------------
         public void Init()
@@ -145,6 +144,9 @@ namespace OcclusionPerTriangleGPU
 
             _allPerModelAttributes = new List<PerModelAttribute>();
             meshes = new List<Mesh>();
+
+            _cbNbTriangleResult = new ComputeBuffer(1, Marshal.SizeOf(typeof(uint)), ComputeBufferType.Counter);
+            _cbNbTriangleResult.SetData(new uint[1] { 0 });
         }
 
         //--------------------------------------------------------------------
@@ -197,7 +199,6 @@ namespace OcclusionPerTriangleGPU
 
             // RESULT => List of triangle idx that are visible by our cam
             _cbAllTriIdxVisible = new ComputeBuffer(_cbAllVerticesInfos.count / 3, Marshal.SizeOf(typeof(uint)), ComputeBufferType.Append);
-            _allTrianglesToZero = new uint[_cbAllVerticesInfos.count / 3];
 
             // Then setup the kernels that will be used to parse the render texture
 
@@ -208,6 +209,7 @@ namespace OcclusionPerTriangleGPU
             // MAP_KERNEL makes the result list, it takes _cbAllVisibilityInfos and creates _cbAllTriIdxVisible
             compute.SetBuffer(MAP_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
             compute.SetBuffer(MAP_KERNEL, "_AllTriIdxVisible", _cbAllTriIdxVisible);
+            compute.SetBuffer(MAP_KERNEL, "_nbTriangleInResult", _cbNbTriangleResult);
 
             // CLEANVISIBILITY_KERNEL
             compute.SetBuffer(CLEANVISIBILITY_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
@@ -239,9 +241,6 @@ namespace OcclusionPerTriangleGPU
             }
 
             _stateCurrent = EnumOccState.Busy_DrawingVisibilityOrFetchingResults;
-
-            // We don't need to reset _cbAllVerticesInfos because it's set back to false in the shader! also i have no idea how to SetData with an array of bool because it's not blitable
-            _cbAllTriIdxVisible.SetData(_allTrianglesToZero); // Otherwise some triangle from previous check will be set!
 
             // Start the coroutine that will draw over some frames + fetch the results 
             _occlusionCoroutine = StartCoroutine(DrawVisibleTrianglesAndComputeResult());
@@ -287,6 +286,7 @@ namespace OcclusionPerTriangleGPU
 
             // Parse the render texture on the GPU to output a list of all visible triangle idx
             _cbAllTriIdxVisible.SetCounterValue(0);
+            _cbNbTriangleResult.SetCounterValue(0);
             compute.Dispatch(CLEANVISIBILITY_KERNEL, _renderTexOcclusion.width, _renderTexOcclusion.height, 1);
             compute.Dispatch(ACCUM_KERNEL, _renderTexOcclusion.width, _renderTexOcclusion.height, 1); // start kernel ACCUM_KERNEL can run in parallel on the entire texture
             compute.Dispatch(MAP_KERNEL, _cbAllVisibilityInfos.count, 1, 1); // start kernel MAP_KERNEL can run in parallel on the entire bool list
@@ -313,23 +313,20 @@ namespace OcclusionPerTriangleGPU
 
             // Compute shader finished but we need to request the data from the GPU, wait for the request to be done, and copy it into an array
             AsyncGPUReadbackRequest requestForVisibleTriIndexes = AsyncGPUReadback.Request(_cbAllTriIdxVisible);
+            AsyncGPUReadbackRequest requestNbTriangleVisible = AsyncGPUReadback.Request(_cbNbTriangleResult);
 
             while (!requestForVisibleTriIndexes.done) yield return null; // wait a bit until request is done
+            while (!requestNbTriangleVisible.done) yield return null;
 
             Unity.Collections.NativeArray<uint> nativeVisibleIdxTri = requestForVisibleTriIndexes.GetData<uint>(); // get the data into a native array
             dataAllTriIdxVisible = new uint[nativeVisibleIdxTri.Length];
             nativeVisibleIdxTri.CopyTo(dataAllTriIdxVisible); // get the data into an array (the native array is not persistent)
 
-            // Determine the real number of triangle indexes in dataAllTriIdxVisible to avoid parsing the trail of 0
-            for (int i = 0; i < dataAllTriIdxVisible.Length; i++)
-            {
-                // When we encounter idxTriangle 0 they are two possibilities : it's the real 0, or it's the start of the 0 trail in the index
-                if (dataAllTriIdxVisible[i] == 0 && i < dataAllTriIdxVisible.Length - 1 && dataAllTriIdxVisible[i + 1] == 0)
-                {
-                    nbTriangleVisible = i; // we found the start of the 0 trail
-                    break;
-                }
-            }
+            Unity.Collections.NativeArray<uint> nativeNbTriangleVisible = requestNbTriangleVisible.GetData<uint>();
+            uint[] data_nbTrianglesInResult = new uint[1];
+            nativeNbTriangleVisible.CopyTo(data_nbTrianglesInResult);
+
+            nbTriangleVisible = (int)data_nbTrianglesInResult[0];
 
             _stateCurrent = EnumOccState.Ready_HasOcclusionResults; // now we have results!
             _occlusionCoroutine = null;
@@ -351,6 +348,7 @@ namespace OcclusionPerTriangleGPU
             if (_cbAllPerModelAttributes != null) { _cbAllPerModelAttributes.Release(); _cbAllPerModelAttributes = null; }
             if (_cbAllTriIdxVisible != null) { _cbAllTriIdxVisible.Release(); _cbAllTriIdxVisible = null; }
             if (_cbAllVisibilityInfos != null) { _cbAllVisibilityInfos.Release(); _cbAllVisibilityInfos = null; }
+            if (isFinal && _cbNbTriangleResult != null) { _cbNbTriangleResult.Release(); _cbNbTriangleResult = null; }
         }
 
         //--------------------------------------------------------------------
@@ -372,16 +370,16 @@ namespace OcclusionPerTriangleGPU
 
             Gizmos.color = Color.red;
 
-            for (int i = 0; i < dataAllTriIdxVisible.Length; i++)
+            for (int i = 0; i < nbTriangleVisible; i++)
             {
-                int idxTriangle = (int)dataAllTriIdxVisible[i];
+                uint idxTriangle = dataAllTriIdxVisible[i];
 
                 if (idxTriangle == 0) break; // We can stop as soon as we reach empty part of array
 
                 // All vertex index are found from the idxTriangle:
-                int idxV0 = idxTriangle * 3;
-                int idxV1 = idxTriangle * 3 + 1;
-                int idxV2 = idxTriangle * 3 + 2;
+                uint idxV0 = idxTriangle * 3;
+                uint idxV1 = idxTriangle * 3 + 1;
+                uint idxV2 = idxTriangle * 3 + 2;
 
                 // Position of each vertex
                 Vector3 posLocal0 = _allVertexData[idxV0].vertex;

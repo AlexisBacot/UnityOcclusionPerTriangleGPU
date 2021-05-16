@@ -8,6 +8,7 @@ Texture2D<float4> _idTex;
 RWStructuredBuffer<bool> _AllVisibilityInfos;
 AppendStructuredBuffer<uint> _AllTriIdxVisible;
 uint _sizeTexWidth;
+RWStructuredBuffer<uint> _nbTriangleInResult; // store the number of resulting triangles of _AllTriIdxVisible in _nbTriangleInResult[0]
 
 //--------------------------------------------------------------------
 // Kernel (0) to create a buffer per triangle id, true at index if triangle with index is visible
@@ -37,7 +38,11 @@ void MapTris(uint3 id : SV_DispatchThreadID)
     uint idxTriangle = id.x;
     bool isVisible = _AllVisibilityInfos[idxTriangle];
 
-    if (isVisible) _AllTriIdxVisible.Append(idxTriangle); // builds the result array of triangle indexes
+    if (isVisible)
+    {
+        _AllTriIdxVisible.Append(idxTriangle); // builds the result array of triangle indexes
+        _nbTriangleInResult[0] = _nbTriangleInResult.IncrementCounter(); // save how many triangles will be in the resulting array
+    }
 
     _AllVisibilityInfos[idxTriangle] = false; // we don't need to apprend this triangle anymore
 }
