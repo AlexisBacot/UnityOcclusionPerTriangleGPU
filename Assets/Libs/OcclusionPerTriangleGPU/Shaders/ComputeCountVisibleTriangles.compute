@@ -1,6 +1,7 @@
 ﻿//--------------------------------------------------------------------
 #pragma kernel AccumulateTriangles
 #pragma kernel MapTris
+#pragma kernel CleanVisibility
 
 //--------------------------------------------------------------------
 Texture2D<float4> _idTex;
@@ -38,6 +39,14 @@ void MapTris(uint3 id : SV_DispatchThreadID)
     if (isVisible) _AllTriIdxVisible.Append(idxTriangle); // builds the result array of triangle indexes
 
     _AllVisibilityInfos[idxTriangle] = false; // we don't need to apprend this triangle anymore
+}
+
+//--------------------------------------------------------------------
+// Kernel (2) to clean the array _AllVisibilityInfos
+[numthreads(1, 1, 1)]
+void CleanVisibility(uint3 id : SV_DispatchThreadID)
+{
+    _AllVisibilityInfos[id.x + 1024 * id.y] = false;
 }
 
 //--------------------------------------------------------------------

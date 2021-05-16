@@ -114,6 +114,7 @@ namespace OcclusionPerTriangleGPU
         private ComputeBuffer _cbAllVisibilityInfos, _cbAllTriIdxVisible;
         private const int ACCUM_KERNEL = 0;
         private const int MAP_KERNEL = 1;
+        private const int CLEANVISIBILITY_KERNEL = 2;
         private int _nbTrianglesMaxPerFrameFinal;
         private uint[] _allTrianglesToZero;
 
@@ -207,6 +208,9 @@ namespace OcclusionPerTriangleGPU
             // MAP_KERNEL makes the result list, it takes _cbAllVisibilityInfos and creates _cbAllTriIdxVisible
             compute.SetBuffer(MAP_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
             compute.SetBuffer(MAP_KERNEL, "_AllTriIdxVisible", _cbAllTriIdxVisible);
+
+            // CLEANVISIBILITY_KERNEL
+            compute.SetBuffer(CLEANVISIBILITY_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
         }
 
         //--------------------------------------------------------------------
@@ -282,6 +286,7 @@ namespace OcclusionPerTriangleGPU
 
             // Parse the render texture on the GPU to output a list of all visible triangle idx
             _cbAllTriIdxVisible.SetCounterValue(0);
+            compute.Dispatch(CLEANVISIBILITY_KERNEL, _renderTexOcclusion.width, _renderTexOcclusion.height, 1);
             compute.Dispatch(ACCUM_KERNEL, _renderTexOcclusion.width, _renderTexOcclusion.height, 1); // start kernel ACCUM_KERNEL can run in parallel on the entire texture
             compute.Dispatch(MAP_KERNEL, _cbAllVisibilityInfos.count, 1, 1); // start kernel MAP_KERNEL can run in parallel on the entire bool list
 
