@@ -211,6 +211,7 @@ namespace OcclusionPerTriangleGPU
 
             // CLEANVISIBILITY_KERNEL
             compute.SetBuffer(CLEANVISIBILITY_KERNEL, "_AllVisibilityInfos", _cbAllVisibilityInfos);
+            compute.SetInt("_sizeTexWidth", _renderTexOcclusion.width);
         }
 
         //--------------------------------------------------------------------
